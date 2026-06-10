@@ -14,12 +14,30 @@ class Regressor:
             quantiles: Target quantile levels to fit (must be in [0, 1]).
         """
         ...
-    def fit(self, x: NDArray[np.float64], y: NDArray[np.float64]) -> None:
+    def fit(
+        self,
+        x: NDArray[np.float64],
+        y: NDArray[np.float64],
+        max_iter: int = 1000,
+        max_inner_iter: int = 10,
+        rho: float = 10.0,
+        lambda_: float = 1e-4,
+        epsilon: float = 0.05,
+        atol: float = 1e-6,
+        rtol: float = 1e-6,
+    ) -> None:
         """Fits the model to the training data.
 
         Args:
             x: Input feature matrix of shape (n_samples, n_features).
             y: Target observation vector of shape (n_samples,).
+            max_iter: Maximum number of ADMM iterations.
+            max_inner_iter: Maximum inner Newton iterations for primal update.
+            rho: Augmented Lagrangian penalty parameter.
+            lambda_: L2 regularization strength
+            epsilon: Huber-smoothing parameter.
+            atol: Absolute convergence tolerance.
+            rtol: Relative convergence tolerance.
         """
         ...
     def predict(

@@ -4,6 +4,7 @@ use numpy::{PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2, ToPyAr
 use pyo3::prelude::*;
 
 pub use crate::model::Regressor;
+pub use crate::solver::admm::AdmmConfig;
 
 /// NumPy view to Faer reference conversions.
 pub trait IntoFaer {
@@ -81,8 +82,22 @@ impl PyRegressor {
         Self { inner: model }
     }
 
-    fn fit(&mut self, x: PyReadonlyArray2<f64>, y: PyReadonlyArray1<f64>) {
-        self.inner.fit(x.into_faer(), y.into_faer());
+    #[pyo3(signature = (x, y, max_iter=1000, max_inner_iter=10, rho=10.0, lambda=1e-4, epsilon=0.05, atol=1e-6, rtol=1e-6))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit(
+        &mut self,
+        x: PyReadonlyArray2<f64>,
+        y: PyReadonlyArray1<f64>,
+        max_iter: usize,
+        max_inner_iter: usize,
+        rho: f64,
+        lambda: f64,
+        epsilon: f64,
+        atol: f64,
+        rtol: f64,
+    ) {
+        let config = AdmmConfig::new(max_iter, max_inner_iter, rho, lambda, epsilon, atol, rtol);
+        self.inner.fit(x.into_faer(), y.into_faer(), config);
     }
 
     fn predict<'py>(

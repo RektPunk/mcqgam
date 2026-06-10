@@ -7,25 +7,40 @@ use crate::solver::pava::pava;
 
 /// Configuration for the ADMM solver.
 pub struct AdmmConfig {
+    /// Maximum number of ADMM iterations.
     pub max_iter: usize,
+    /// Maximum inner Newton iterations for primal update.
     pub max_inner_iter: usize,
+    /// Augmented Lagrangian penalty parameter ($\rho$).
     pub rho: f64,
+    /// $L_2$ regularization strength ($\lambda$).
     pub lambda: f64,
+    /// Huber-smoothing parameter ($\epsilon$).
     pub epsilon: f64,
+    /// Absolute convergence tolerance.
     pub atol: f64,
+    /// Relative convergence tolerance.
     pub rtol: f64,
 }
 
-impl Default for AdmmConfig {
-    fn default() -> Self {
+impl AdmmConfig {
+    pub fn new(
+        max_iter: usize,
+        max_inner_iter: usize,
+        rho: f64,
+        lambda: f64,
+        epsilon: f64,
+        atol: f64,
+        rtol: f64,
+    ) -> Self {
         Self {
-            max_iter: 1000,
-            max_inner_iter: 10,
-            rho: 10.0,
-            lambda: 1e-4,
-            epsilon: 0.05,
-            atol: 1e-6,
-            rtol: 1e-6,
+            max_iter,
+            max_inner_iter,
+            rho,
+            lambda,
+            epsilon,
+            atol,
+            rtol,
         }
     }
 }

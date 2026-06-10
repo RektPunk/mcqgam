@@ -36,7 +36,7 @@ impl Regressor {
     }
 
     /// Fits model coefficients using ADMM solver.
-    pub fn fit(&mut self, x: MatRef<f64>, y: ColRef<f64>) {
+    pub fn fit(&mut self, x: MatRef<f64>, y: ColRef<f64>, config: AdmmConfig) {
         let n_features = x.ncols();
         let n_samples = x.nrows();
 
@@ -50,7 +50,6 @@ impl Regressor {
 
         let design_matrix = StructuredDesignMatrix::new(x, &self.knots_per_feature, self.degree);
 
-        let config = AdmmConfig::default();
         let result = solve_admm(y, &design_matrix, &self.quantiles, &config);
 
         self.coeffs = Some(result.coeffs);

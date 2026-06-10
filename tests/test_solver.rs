@@ -1,6 +1,7 @@
 use faer::{Col, Mat};
 
 use mcqgam::model::Regressor;
+use mcqgam::solver::admm::AdmmConfig;
 use mcqgam::solver::objective::{huber_pinball_grad, huber_pinball_hess, huber_pinball_loss};
 use mcqgam::solver::pava::pava;
 
@@ -74,7 +75,9 @@ fn test_solve_admm_simple() {
     });
 
     let mut model = Regressor::new(1, 0, vec![0.5]);
-    model.fit(x.as_ref(), y.as_ref());
+    let config = AdmmConfig::new(1000, 10, 10.0, 1e-4, 0.05, 1e-6, 1e-6);
+
+    model.fit(x.as_ref(), y.as_ref(), config);
 
     let _coef = model.coeffs.as_ref().unwrap();
 
