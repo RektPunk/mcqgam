@@ -1,0 +1,9 @@
+/target
+/.idea
+/.venv
+
+*.pyd
+*.pdb
+__pycache__
+.DS_Store
+.python-version
