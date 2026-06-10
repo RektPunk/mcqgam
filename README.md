@@ -4,7 +4,8 @@
 
 
 **mcqgam** is a library for fitting a **Monotone Composite Quantile Generalized Additive Model** using B-splines and ADMM optimization. 
-The model estimates a conditional quantile function by minimizing the empirical Continuous Ranked Probability Score (CRPS), approximated via weighted Huber-smoothed pinball losses across quantile levels under the non-crossing constraint.
+The model estimates a conditional quantile function by minimizing the empirical Continuous Ranked Probability Score (CRPS), approximated via weighted Huber-smoothed pinball losses across quantile levels under the non-crossing constraint. Try it here:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/RektPunk/mcqgam/blob/main/examples/example.ipynb)
 
 ## Installation
 ```bash
