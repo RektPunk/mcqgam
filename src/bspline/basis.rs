@@ -2,6 +2,11 @@
 /// $B_{i,0}(x) = 1$ if $t_i \le x < t_{i+1}$, else $0$.
 /// $B_{i,d}(x) = \frac{x - t_i}{t_{i+d} - t_i} B_{i,d-1}(x) + \frac{t_{i+d+1} - x}{t_{i+d+1} - t_{i+1}} B_{i+1,d-1}(x)$.
 pub fn evaluate_bspline(x_raw: f64, knots: &[f64], degree: usize, out_basis: &mut [f64]) -> usize {
+    if x_raw.is_nan() {
+        out_basis.fill(0.0);
+        return 0;
+    }
+
     let n_knots = knots.len();
     let required_buffer_len = degree + 1;
 

@@ -40,7 +40,13 @@ impl Regressor {
         let n_features = x.ncols();
         let n_samples = x.nrows();
 
-        // Generate knots based on feature quantiles
+        // Ensure target y is clean for solver stability without unnecessary copying
+        assert!(
+            y.iter().all(|&val| !val.is_nan()),
+            "Target variable y contains NaN values"
+        );
+
+        // Generate knots based on feature quantiles using the full feature set
         self.knots_per_feature = (0..n_features)
             .map(|p_idx| {
                 let feature_col: Vec<f64> = (0..n_samples).map(|r_idx| x[(r_idx, p_idx)]).collect();

@@ -5,7 +5,7 @@ use mcqgam::bspline::knots::generate_quantile_knots;
 use mcqgam::bspline::matrix::StructuredDesignMatrix;
 
 #[test]
-fn test_generate_quantile_knots_basic() {
+fn test_generate_quantile_knots_standard() {
     let data = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
     let n_internal_knots = 3;
     let degree = 3;
@@ -72,7 +72,7 @@ fn test_generate_quantile_knots_empty_and_all_nan() {
 }
 
 #[test]
-fn test_generate_quantile_knots_zero_inflated_financial() {
+fn test_generate_quantile_knots_zero_inflated() {
     let data = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 10.0];
     let knots = generate_quantile_knots(&data, 3, 2);
 
@@ -133,7 +133,7 @@ fn test_clamping_and_boundaries() {
 }
 
 #[test]
-fn test_evaluate_bspline_partition_of_unity() {
+fn test_partition_of_unity_with_quantile_knots() {
     let data = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
     let degree = 3;
     let knots = generate_quantile_knots(&data, 2, degree);
@@ -144,6 +144,22 @@ fn test_evaluate_bspline_partition_of_unity() {
         let sum: f64 = out_basis.iter().sum();
         assert!((sum - 1.0).abs() < 1e-9);
     }
+}
+
+#[test]
+fn test_invalid_and_edge_inputs() {
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0];
+    let degree = 3;
+    let mut out_basis = vec![1.0; degree + 1];
+    let start_idx_nan = evaluate_bspline(f64::NAN, &knots, degree, &mut out_basis);
+    assert_eq!(start_idx_nan, 0);
+    assert!(out_basis.iter().all(|&v| v == 0.0));
+
+    let insufficient_knots = vec![0.0, 1.0];
+    let mut out_basis_short = vec![1.0; degree + 1];
+    let start_idx_short = evaluate_bspline(0.5, &insufficient_knots, degree, &mut out_basis_short);
+    assert_eq!(start_idx_short, 0);
+    assert!(out_basis_short.iter().all(|&v| v == 0.0));
 }
 
 fn setup_test_matrix(n_samples: usize, n_features: usize, degree: usize) -> StructuredDesignMatrix {
@@ -213,7 +229,7 @@ fn test_matrix_shapes_and_dimensions() {
 }
 
 #[test]
-fn test_forward_multiply_mathematical_correctness() {
+fn test_matrix_multiply_forward() {
     let matrix = setup_test_matrix(15, 4, 3);
     let dense_ref = test_helper_to_dense(&matrix);
     let coef: Vec<f64> = (0..matrix.n_basis_total)
@@ -233,7 +249,7 @@ fn test_forward_multiply_mathematical_correctness() {
 }
 
 #[test]
-fn test_transpose_multiply_mathematical_correctness() {
+fn test_matrix_multiply_transpose() {
     let matrix = setup_test_matrix(20, 2, 2);
     let dense_ref = test_helper_to_dense(&matrix);
     let gradients: Vec<f64> = (0..matrix.n_samples)
@@ -253,7 +269,7 @@ fn test_transpose_multiply_mathematical_correctness() {
 }
 
 #[test]
-fn test_compute_btb_hessian_correctness() {
+fn test_matrix_compute_btb() {
     let matrix = setup_test_matrix(30, 3, 2);
     let dense_ref = test_helper_to_dense(&matrix);
     let btb_optimized = matrix.compute_btb();
