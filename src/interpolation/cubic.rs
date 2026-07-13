@@ -19,37 +19,36 @@ impl MonotoneCubicSpline {
                 derivatives: vec![0.0; n_points],
             };
         }
-
-        let mut slopes = vec![0.0; n_points - 1];
-        for q_idx in 0..n_points - 1 {
-            // Finite difference slope $s_i = \frac{y_{i+1} - y_i}{x_{i+1} - x_i}$
-            slopes[q_idx] =
-                (preds[q_idx + 1] - preds[q_idx]) / (quantiles[q_idx + 1] - quantiles[q_idx]);
-        }
-
         let mut derivatives = vec![0.0; n_points];
-        derivatives[0] = slopes[0];
-        for q_idx in 1..n_points - 1 {
-            // Average slope $d_i = \frac{s_{i-1} + s_i}{2}$
-            derivatives[q_idx] = (slopes[q_idx - 1] + slopes[q_idx]) / 2.0;
-        }
-        derivatives[n_points - 1] = slopes[n_points - 2];
+        let mut prev_slope = (preds[1] - preds[0]) / (quantiles[1] - quantiles[0]);
+        derivatives[0] = prev_slope;
 
-        // Fritsch-Butland algorithm for monotonicity
-        for q_idx in 0..n_points - 1 {
-            if slopes[q_idx] == 0.0 {
-                // Flat region requires zero derivatives for monotonicity
-                derivatives[q_idx] = 0.0;
-                derivatives[q_idx + 1] = 0.0;
+        for i in 1..n_points - 1 {
+            let curr_slope = (preds[i + 1] - preds[i]) / (quantiles[i + 1] - quantiles[i]);
+            if prev_slope * curr_slope <= 0.0 {
+                derivatives[i] = 0.0;
             } else {
-                let alpha = derivatives[q_idx] / slopes[q_idx];
-                let beta = derivatives[q_idx + 1] / slopes[q_idx];
+                derivatives[i] = (prev_slope + curr_slope) / 2.0;
+            }
+            prev_slope = curr_slope;
+        }
+        derivatives[n_points - 1] = prev_slope;
+
+        for i in 0..n_points - 1 {
+            let slope = (preds[i + 1] - preds[i]) / (quantiles[i + 1] - quantiles[i]);
+
+            if slope == 0.0 {
+                derivatives[i] = 0.0;
+                derivatives[i + 1] = 0.0;
+            } else {
+                let alpha = derivatives[i] / slope;
+                let beta = derivatives[i + 1] / slope;
                 let squared_dist = alpha * alpha + beta * beta;
+
                 if squared_dist > 9.0 {
-                    // Necessary and sufficient condition: scale $(d_i, d_{i+1})$ to lie inside $R$
                     let tau = 3.0 / squared_dist.sqrt();
-                    derivatives[q_idx] = tau * alpha * slopes[q_idx];
-                    derivatives[q_idx + 1] = tau * beta * slopes[q_idx];
+                    derivatives[i] *= tau;
+                    derivatives[i + 1] *= tau;
                 }
             }
         }
@@ -64,6 +63,10 @@ impl MonotoneCubicSpline {
     /// Interpolates at $q$ using Hermite basis functions.
     /// $f(q) = y_i h_{00}(t) + h d_i h_{10}(t) + y_{i+1} h_{01}(t) + h d_{i+1} h_{11}(t)$
     pub fn interpolate(&self, quantile: f64) -> f64 {
+        if quantile.is_nan() {
+            return f64::NAN;
+        }
+
         let n_points = self.quantiles.len();
         if n_points == 0 {
             return 0.0;

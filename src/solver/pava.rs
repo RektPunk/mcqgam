@@ -2,6 +2,12 @@
 /// Solves $\min \sum (x_i - y_i)^2$ subject to $x_1 \le x_2 \le \dots \le x_n$.
 pub fn pava(input: &[f64], output: &mut [f64]) {
     let n_elements = input.len();
+    assert_eq!(
+        n_elements,
+        output.len(),
+        "Input and output slices must have the same length"
+    );
+
     if n_elements == 0 {
         return;
     }
@@ -19,7 +25,7 @@ pub fn pava(input: &[f64], output: &mut [f64]) {
 
         // Merge blocks while monotonicity is violated: $\bar{y}_{prev} \ge \bar{y}_{curr}$
         while let Some(&(prev_sum, prev_count)) = blocks.last() {
-            if prev_sum / prev_count as f64 >= current_sum / current_count as f64 {
+            if prev_sum * (current_count as f64) >= current_sum * (prev_count as f64) {
                 current_sum += prev_sum;
                 current_count += prev_count;
                 blocks.pop();
@@ -33,9 +39,7 @@ pub fn pava(input: &[f64], output: &mut [f64]) {
     let mut q_idx = 0;
     for (total_sum, count) in blocks {
         let average_val = total_sum / count as f64;
-        for _ in 0..count {
-            output[q_idx] = average_val;
-            q_idx += 1;
-        }
+        output[q_idx..q_idx + count].fill(average_val);
+        q_idx += count;
     }
 }
