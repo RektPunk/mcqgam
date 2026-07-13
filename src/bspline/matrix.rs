@@ -5,6 +5,11 @@ use crate::bspline::basis::evaluate_bspline;
 
 const CHUNK_SIZE: usize = 1024;
 
+struct ActiveBasesView<'a> {
+    coef_start: usize,
+    basis_values: &'a [f64],
+}
+
 /// Compressed B-spline design matrix $B$.
 pub struct StructuredDesignMatrix {
     /// Number of data samples ($N$).
@@ -16,11 +21,11 @@ pub struct StructuredDesignMatrix {
     /// B-spline degree ($d$).
     pub degree: usize,
     /// Start index of non-zero basis functions for each $(i, d)$ pair.
-    pub basis_starts: Vec<usize>,
+    pub basis_starts: Vec<u32>,
     /// Evaluated values of active basis functions ($B_{d,k}$).
     pub basis_values: Vec<f64>,
     /// Feature-wise offsets in global coefficient vector.
-    pub feature_offsets: Vec<usize>,
+    pub feature_offsets: Vec<u32>,
 }
 
 impl StructuredDesignMatrix {
@@ -34,22 +39,17 @@ impl StructuredDesignMatrix {
         let mut current_offset = 1;
 
         for knots in knots_vec {
-            // Basis functions $M = K - (d + 1)$ where $K$ is knot count
             let basis_count = knots.len() - n_basis_active;
-            feature_offsets.push(current_offset);
+            feature_offsets.push(current_offset as u32);
             current_offset += basis_count;
         }
 
         let mut basis_starts = vec![0; n_samples * n_features];
         let mut basis_values = vec![0.0; n_samples * n_features * n_basis_active];
 
-        // Parallelize across row chunks for faster construction
-        let first_indices_chunks = basis_starts.par_chunks_mut(CHUNK_SIZE * n_features);
-        let basis_values_chunks =
-            basis_values.par_chunks_mut(CHUNK_SIZE * n_features * n_basis_active);
-
-        first_indices_chunks
-            .zip(basis_values_chunks)
+        basis_starts
+            .par_chunks_mut(CHUNK_SIZE * n_features)
+            .zip(basis_values.par_chunks_mut(CHUNK_SIZE * n_features * n_basis_active))
             .enumerate()
             .for_each(|(c_idx, (idx_chunk, val_chunk))| {
                 let start_row = c_idx * CHUNK_SIZE;
@@ -60,11 +60,10 @@ impl StructuredDesignMatrix {
                     let r_idx = start_row + lr_idx;
                     for p_idx in 0..n_features {
                         let x_val = x[(r_idx, p_idx)];
-                        // Compute local non-zero basis values and their global start index
                         let start_idx =
                             evaluate_bspline(x_val, &knots_vec[p_idx], degree, &mut basis_buffer);
 
-                        idx_chunk[lr_idx * n_features + p_idx] = start_idx;
+                        idx_chunk[lr_idx * n_features + p_idx] = start_idx as u32;
                         let val_offset = (lr_idx * n_features + p_idx) * n_basis_active;
                         val_chunk[val_offset..val_offset + n_basis_active]
                             .copy_from_slice(&basis_buffer);
@@ -83,7 +82,21 @@ impl StructuredDesignMatrix {
         }
     }
 
-    /// Computes $y = B \cdot \text{coef}$ where $y_i = \text{coef}_0 + \sum_{d=1}^D \sum_{k=0}^d B_{d,k}(x_{i,d}) \text{coef}_{d,k}$.
+    #[inline(always)]
+    fn view_basis(&self, r_idx: usize, p_idx: usize) -> ActiveBasesView<'_> {
+        let n_basis_active = self.degree + 1;
+        let flat_idx = r_idx * self.n_features + p_idx;
+        let val_off = flat_idx * n_basis_active;
+        let basis_start = self.basis_starts[flat_idx] as usize;
+        let feature_offset = self.feature_offsets[p_idx] as usize;
+
+        ActiveBasesView {
+            coef_start: feature_offset + basis_start,
+            basis_values: &self.basis_values[val_off..val_off + n_basis_active],
+        }
+    }
+
+    /// Computes y where y_i = coef_0 + \sum_{d=1}^D \sum_{k=0}^d B_{d,k}(x_{i,d}) coef_{d,k}.
     pub fn multiply(&self, coefficients: &[f64], y_pred: &mut [f64]) {
         assert_eq!(
             coefficients.len(),
@@ -92,36 +105,24 @@ impl StructuredDesignMatrix {
         );
         assert_eq!(y_pred.len(), self.n_samples, "Predictions size mismatch");
         let n_basis_active = self.degree + 1;
-        let n_features = self.n_features;
         let intercept = coefficients[0];
 
         y_pred
-            .par_chunks_mut(CHUNK_SIZE)
+            .par_iter_mut()
             .enumerate()
-            .for_each(|(c_idx, chunk)| {
-                let start_row = c_idx * CHUNK_SIZE;
-                for (lr_idx, pred_val) in chunk.iter_mut().enumerate() {
-                    let r_idx = start_row + lr_idx;
-                    let mut sum = intercept;
-                    let row_base = r_idx * n_features;
-
-                    for p_idx in 0..n_features {
-                        let flat_idx = row_base + p_idx;
-                        let b_off = self.basis_starts[flat_idx];
-                        let val_off = flat_idx * n_basis_active;
-                        let col_off = self.feature_offsets[p_idx];
-
-                        for k_idx in 0..n_basis_active {
-                            sum += self.basis_values[val_off + k_idx]
-                                * coefficients[col_off + b_off + k_idx];
-                        }
+            .for_each(|(r_idx, pred_val)| {
+                let mut sum = intercept;
+                for p_idx in 0..self.n_features {
+                    let view = self.view_basis(r_idx, p_idx);
+                    for k_idx in 0..n_basis_active {
+                        sum += view.basis_values[k_idx] * coefficients[view.coef_start + k_idx];
                     }
-                    *pred_val = sum;
                 }
+                *pred_val = sum;
             });
     }
 
-    /// Computes $z = B^T \cdot \text{grads}$ for gradient backpropagation.
+    /// Computes z = B^T grads for gradient backpropagation.
     pub fn transpose_multiply(&self, grads: &[f64], out_coef_grads: &mut [f64]) {
         assert_eq!(grads.len(), self.n_samples, "Gradients size mismatch");
         assert_eq!(
@@ -131,26 +132,18 @@ impl StructuredDesignMatrix {
         );
 
         let n_basis_active = self.degree + 1;
-        let total_grads = grads
-            .par_chunks(CHUNK_SIZE)
-            .enumerate()
+        let total_grads = (0..self.n_samples)
+            .into_par_iter()
             .fold(
                 || vec![0.0; self.n_basis_total],
-                |mut acc, (c_idx, grad_chunk)| {
-                    let start_row = c_idx * CHUNK_SIZE;
-                    for (lr_idx, &g_i) in grad_chunk.iter().enumerate() {
-                        let r_idx = start_row + lr_idx;
-                        acc[0] += g_i;
-                        for p_idx in 0..self.n_features {
-                            let flat = r_idx * self.n_features + p_idx;
-                            let b_off = self.basis_starts[flat];
-                            let val_off = flat * n_basis_active;
-                            let col_off = self.feature_offsets[p_idx];
+                |mut acc, r_idx| {
+                    let g_i = grads[r_idx];
+                    acc[0] += g_i;
 
-                            for k_idx in 0..n_basis_active {
-                                acc[col_off + b_off + k_idx] +=
-                                    self.basis_values[val_off + k_idx] * g_i;
-                            }
+                    for p_idx in 0..self.n_features {
+                        let view = self.view_basis(r_idx, p_idx);
+                        for k_idx in 0..n_basis_active {
+                            acc[view.coef_start + k_idx] += view.basis_values[k_idx] * g_i;
                         }
                     }
                     acc
@@ -167,41 +160,43 @@ impl StructuredDesignMatrix {
         out_coef_grads.copy_from_slice(&total_grads);
     }
 
-    /// Computes $B^T B$ utilizing the sparse structure of $B$.
+    /// Computes B^TB utilizing the sparse structure of B.
     pub fn compute_btb(&self) -> Mat<f64> {
         let n_basis_active = self.degree + 1;
         let n_basis_total = self.n_basis_total;
 
         let btb_vec = (0..self.n_samples)
             .into_par_iter()
-            .chunks(CHUNK_SIZE)
             .fold(
                 || vec![0.0; n_basis_total * n_basis_total],
-                |mut acc, chunk| {
-                    for r_idx in chunk {
-                        acc[0] += 1.0;
+                |mut acc, r_idx| {
+                    acc[0] += 1.0;
 
-                        for p_idx in 0..self.n_features {
-                            let flat = r_idx * self.n_features + p_idx;
-                            let b_off = self.basis_starts[flat];
-                            let val_off = flat * n_basis_active;
-                            let col_off = self.feature_offsets[p_idx];
+                    for p1 in 0..self.n_features {
+                        let view1 = self.view_basis(r_idx, p1);
 
-                            for k_idx in 0..n_basis_active {
-                                let val = self.basis_values[val_off + k_idx];
-                                let idx = col_off + b_off + k_idx;
-                                acc[idx] += val;
-                                acc[idx * n_basis_total] += val;
-                            }
+                        for k1 in 0..n_basis_active {
+                            let idx1 = view1.coef_start + k1;
+                            let v1 = view1.basis_values[k1];
+                            acc[idx1] += v1;
+                            acc[idx1 * n_basis_total] += v1;
+                        }
 
-                            for k1_idx in 0..n_basis_active {
-                                let v1 = self.basis_values[val_off + k1_idx];
-                                let idx1 = col_off + b_off + k1_idx;
-                                for k2_idx in k1_idx..n_basis_active {
-                                    let val = v1 * self.basis_values[val_off + k2_idx];
-                                    let idx2 = col_off + b_off + k2_idx;
-                                    let pos = idx1 * n_basis_total + idx2;
-                                    acc[pos] += val;
+                        for p2 in p1..self.n_features {
+                            let view2 = self.view_basis(r_idx, p2);
+                            let is_same_feature = p1 == p2;
+
+                            for k1 in 0..n_basis_active {
+                                let idx1 = view1.coef_start + k1;
+                                let v1 = view1.basis_values[k1];
+
+                                let k2_start = if is_same_feature { k1 } else { 0 };
+
+                                for k2 in k2_start..n_basis_active {
+                                    let idx2 = view2.coef_start + k2;
+                                    let val = v1 * view2.basis_values[k2];
+
+                                    acc[idx1 * n_basis_total + idx2] += val;
                                     if idx1 != idx2 {
                                         acc[idx2 * n_basis_total + idx1] += val;
                                     }
@@ -220,8 +215,8 @@ impl StructuredDesignMatrix {
                 },
             );
 
-        Mat::from_fn(n_basis_total, n_basis_total, |r_idx, b_idx| {
-            btb_vec[b_idx * n_basis_total + r_idx]
+        Mat::from_fn(n_basis_total, n_basis_total, |r_idx, c_idx| {
+            btb_vec[r_idx * n_basis_total + c_idx]
         })
     }
 }

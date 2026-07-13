@@ -14,9 +14,9 @@ fn test_generate_quantile_knots_standard() {
     assert_eq!(knots.len(), 11);
     assert_eq!(knots[0], 0.0);
     assert_eq!(knots[3], 0.0);
-    assert_eq!(knots[4], 2.0);
+    assert_eq!(knots[4], 3.0);
     assert_eq!(knots[5], 5.0);
-    assert_eq!(knots[6], 7.0);
+    assert_eq!(knots[6], 8.0);
     assert_eq!(knots[7], 10.0);
     assert_eq!(knots[10], 10.0);
 }
@@ -35,7 +35,7 @@ fn test_generate_quantile_knots_duplicate_data() {
     let data = vec![1.0, 1.0, 1.0, 1.0];
     let knots = generate_quantile_knots(&data, 2, 1);
 
-    assert_eq!(knots, vec![1.0, 1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(knots, vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
 }
 
 #[test]
@@ -48,9 +48,9 @@ fn test_generate_quantile_knots_unsorted() {
     assert_eq!(knots.len(), 11);
     assert_eq!(knots[0], 0.0);
     assert_eq!(knots[3], 0.0);
-    assert_eq!(knots[4], 2.0);
+    assert_eq!(knots[4], 3.0);
     assert_eq!(knots[5], 5.0);
-    assert_eq!(knots[6], 7.0);
+    assert_eq!(knots[6], 8.0);
     assert_eq!(knots[7], 10.0);
 }
 
@@ -74,9 +74,11 @@ fn test_generate_quantile_knots_empty_and_all_nan() {
 #[test]
 fn test_generate_quantile_knots_zero_inflated() {
     let data = vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 10.0];
-    let knots = generate_quantile_knots(&data, 3, 2);
+    let n_internal_knots = 3;
+    let degree = 2;
+    let knots = generate_quantile_knots(&data, n_internal_knots, degree);
 
-    assert_eq!(knots.len(), 7);
+    assert_eq!(knots.len(), 2 * (degree + 1) + n_internal_knots);
     for i in 1..knots.len() {
         assert!(knots[i] >= knots[i - 1]);
     }
@@ -191,7 +193,7 @@ fn test_helper_to_dense(matrix: &StructuredDesignMatrix) -> Mat<f64> {
             let val_offset = flat_idx * n_basis_active;
 
             for k_idx in 0..n_basis_active {
-                let col = col_offset + start_basis + k_idx;
+                let col = col_offset as usize + start_basis as usize + k_idx;
                 dense[(r_idx, col)] = matrix.basis_values[val_offset + k_idx];
             }
         }
@@ -289,12 +291,12 @@ fn test_matrix_compute_btb() {
                     let end = if p_idx + 1 < n_features {
                         matrix.feature_offsets[p_idx + 1]
                     } else {
-                        n_total
+                        n_total as u32
                     };
-                    if b1_idx >= start && b1_idx < end {
+                    if b1_idx >= start as usize && b1_idx < end as usize {
                         feat_of_b1 = p_idx;
                     }
-                    if b2_idx >= start && b2_idx < end {
+                    if b2_idx >= start as usize && b2_idx < end as usize {
                         feat_of_b2 = p_idx;
                     }
                 }

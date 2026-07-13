@@ -1,6 +1,6 @@
 /// Evaluates B-spline basis functions using De Boor's recursion.
-/// $B_{i,0}(x) = 1$ if $t_i \le x < t_{i+1}$, else $0$.
-/// $B_{i,d}(x) = \frac{x - t_i}{t_{i+d} - t_i} B_{i,d-1}(x) + \frac{t_{i+d+1} - x}{t_{i+d+1} - t_{i+1}} B_{i+1,d-1}(x)$.
+/// B_{i,0}(x) = 1 if $t_i \le x < t_{i+1}$, else 0.
+/// B_{i,d}(x) = (x - t_i)/(t_{i+d} - t_i) B_{i,d-1}(x) + (t_{i+d+1} - x)/(t_{i+d+1} - t_{i+1}) B_{i+1,d-1}(x)$.
 pub fn evaluate_bspline(x_raw: f64, knots: &[f64], degree: usize, out_basis: &mut [f64]) -> usize {
     if x_raw.is_nan() {
         out_basis.fill(0.0);
@@ -22,54 +22,56 @@ pub fn evaluate_bspline(x_raw: f64, knots: &[f64], degree: usize, out_basis: &mu
         return 0;
     }
 
-    // Clamp $x$ to the valid domain $[t_d, t_{n-d-1}]$
+    // Clamp x to the valid domain [t_d, t_{n-d-1}]
     let min_knot = knots[degree];
     let max_knot = knots[n_knots - degree - 1];
     let x = x_raw.clamp(min_knot, max_knot);
 
-    // Locate the knot span index $j$ such that $t_j \le x < t_{j+1}$
-    let mut span_idx = match knots.binary_search_by(|val| val.total_cmp(&x)) {
-        Ok(idx) => {
-            // Handle multiple knots at the same location to find the rightmost index
-            let mut search_idx = idx;
-            while search_idx + 1 < n_knots && knots[search_idx + 1] == x {
-                search_idx += 1;
+    let high_boundary_idx = n_knots - degree - 1;
+    let span_idx = if x >= knots[high_boundary_idx] {
+        high_boundary_idx - 1
+    } else {
+        let mut low = degree;
+        let mut high = high_boundary_idx;
+        while low + 1 < high {
+            let mid = (low + high) / 2;
+            if x < knots[mid] {
+                high = mid;
+            } else {
+                low = mid;
             }
-            search_idx
         }
-        Err(idx) => {
-            // Standard binary search result for value not in list
-            if idx == 0 { 0 } else { idx - 1 }
-        }
+        low
     };
-
-    // Ensure span index is within valid range for $d$-degree basis
-    if span_idx < degree {
-        span_idx = degree;
-    } else if span_idx >= n_knots - degree - 1 {
-        span_idx = n_knots - degree - 2;
+    if degree == 0 {
+        return span_idx;
     }
 
     // Base case: 0-degree basis $B_{i,0}(x) = 1$
     out_basis[0] = 1.0;
+
+    // Clear out the rest of the active basis buffer cleanly
     out_basis[1..=degree].fill(0.0);
+
+    let out_basis = &mut out_basis[..=degree];
+    let knot_slice = &knots[span_idx - degree + 1..=span_idx + degree];
 
     // De Boor's recursion: compute degree d_idx from d_idx-1
     for d_idx in 1..=degree {
         let mut prev_val = 0.0;
         for lb_idx in 0..d_idx {
-            // Indices for the two lower-degree basis functions contributing to $B_{lb_idx,d_idx}$
-            let knot_left = knots[span_idx + 1 + lb_idx - d_idx];
-            let knot_right = knots[span_idx + 1 + lb_idx];
+            // Indices for the two lower-degree basis functions contributing to B_{lb_idx,d_idx}
+            let knot_left = knot_slice[degree + lb_idx - d_idx];
+            let knot_right = knot_slice[degree + lb_idx];
 
-            // Convex combination coefficient $\alpha = \frac{x - t_i}{t_{i+k} - t_i}$
+            // Convex combination coefficient \alpha = (x - t_i)/(t_{i+k} - t_i)
             let alpha = if knot_right == knot_left {
                 0.0
             } else {
                 (x - knot_left) / (knot_right - knot_left)
             };
 
-            // Update in-place: $B_{i,k} = (1-\alpha)B_{i,k-1} + \alpha_{prev}B_{i-1,k-1}$
+            // Update in-place: B_{i,k} = (1-\alpha)B_{i,k-1} + \alpha_{prev}B_{i-1,k-1}
             let current_val = out_basis[lb_idx];
             out_basis[lb_idx] = prev_val + (1.0 - alpha) * current_val;
             prev_val = alpha * current_val;
