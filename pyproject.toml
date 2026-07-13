@@ -1,6 +1,6 @@
 [project]
 name = "mcqgam"
-version = "0.0.1"
+version = "0.0.2"
 description = "Monotone Composite Quantile Generalized Additive Model"
 authors = [
     {name = "RektPunk", email = "rektpunk@gmail.com"},

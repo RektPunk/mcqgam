@@ -47,7 +47,7 @@ impl AdmmConfig {
 
 /// Result of the ADMM optimization.
 pub struct AdmmResult {
-    /// Fitted coefficient matrix $\text{coef} \in \mathbb{R}^{K \times M}$.
+    /// Fitted coefficient matrix (K x M).
     pub coeffs: Mat<f64>,
     /// Number of total iterations performed.
     pub iterations: usize,
@@ -55,16 +55,12 @@ pub struct AdmmResult {
     pub converged: bool,
 }
 
-/// Thread-local workspace for a single quantile optimization.
 struct QuantileWorkspace {
-    /// Local prediction buffer ($\hat{y} = B \cdot \text{coef}$).
     y_pred: Vec<f64>,
-    /// Huber loss gradients with respect to residuals ($\nabla_r L$).
     residual_gradients: Vec<f64>,
-    /// Gradients with respect to coefficients ($B^T \nabla_r L$).
     coeff_grads: Vec<f64>,
-    /// Current coefficient state for inner iterations.
     current_coef: Vec<f64>,
+    grad_col: Col<f64>,
 }
 
 impl QuantileWorkspace {
@@ -74,12 +70,17 @@ impl QuantileWorkspace {
             residual_gradients: vec![0.0; n_samples],
             coeff_grads: vec![0.0; n_basis_total],
             current_coef: vec![0.0; n_basis_total],
+            grad_col: Col::<f64>::zeros(n_basis_total),
         }
     }
 }
 
-/// Solves $\min_{\text{coef}} L(y, B \cdot \text{coef}) + \frac{\lambda}{2}\|\text{coef}\|_2^2$ subject to monotonicity.
-/// Uses ADMM for constrained optimization.
+struct PavaWorkspace {
+    v_targets: Vec<f64>,
+    z_projection: Vec<f64>,
+}
+
+/// Solves constrained optimization using ADMM.
 pub fn solve_admm(
     y: ColRef<f64>,
     design_matrix: &StructuredDesignMatrix,
@@ -98,6 +99,7 @@ pub fn solve_admm(
     let mut coef = Mat::<f64>::zeros(n_basis_total, n_quantiles);
     let mut monotone_coef = Mat::<f64>::zeros(n_basis_total, n_quantiles);
     let mut dual_var = Mat::<f64>::zeros(n_basis_total, n_quantiles);
+    let mut z_prev = Mat::<f64>::zeros(n_basis_total, n_quantiles);
 
     let mut current_rho = config.rho;
     let mut converged = false;
@@ -107,7 +109,7 @@ pub fn solve_admm(
     let factorize_hessian = |rho: f64| {
         let mut hessian = btb.clone();
         for b_idx in 0..n_basis_total {
-            // Augmented Hessian $H = B^T B + (\lambda + \rho)I$
+            // Augmented Hessian H = B^T B + (\lambda + \rho)I
             hessian[(b_idx, b_idx)] += config.lambda + rho;
         }
         hessian
@@ -117,11 +119,10 @@ pub fn solve_admm(
 
     let mut llt_factorization = factorize_hessian(current_rho);
 
-    // Weights for CRPS approximation: $\sum w_i = M$
+    // Weights for CRPS approximation
     let mut weights = vec![1.0; n_quantiles];
     if n_quantiles > 1 {
         for q_idx in 0..n_quantiles {
-            // Trapezoidal-like rule for quantile spacing
             let w = if q_idx == 0 {
                 (quantiles[0] + quantiles[1]) / 2.0
             } else if q_idx == n_quantiles - 1 {
@@ -137,9 +138,16 @@ pub fn solve_admm(
         .map(|_| QuantileWorkspace::new(n_samples, n_basis_total))
         .collect();
 
+    let mut pava_workspaces: Vec<PavaWorkspace> = (0..n_basis_total)
+        .map(|_| PavaWorkspace {
+            v_targets: vec![0.0; n_quantiles],
+            z_projection: vec![0.0; n_quantiles],
+        })
+        .collect();
+
     for iter_idx in 0..config.max_iter {
         final_iter = iter_idx;
-        let z_prev = monotone_coef.clone();
+        z_prev.as_mut().copy_from(monotone_coef.as_ref());
 
         // Primal update: $\text{coef}^{k+1} = \text{argmin}_{\text{coef}} \mathcal{L}(\text{coef}, z^k, u^k)$
         workspaces
@@ -154,44 +162,36 @@ pub fn solve_admm(
                 }
 
                 for _ in 0..config.max_inner_iter {
-                    // Compute predictions $y = B \cdot \text{coef}$
+                    // Compute predictions
                     design_matrix.multiply(&ws.current_coef, &mut ws.y_pred);
 
-                    // Compute Huber-smoothed pinball gradients $\nabla L$
-                    let chunk_size = 2048;
-                    ws.residual_gradients
-                        .par_chunks_mut(chunk_size)
-                        .enumerate()
-                        .for_each(|(c_idx, chunk)| {
-                            let start = c_idx * chunk_size;
-                            for (lr_idx, g_val) in chunk.iter_mut().enumerate() {
-                                let r_idx = start + lr_idx;
-                                let r = y[r_idx] - ws.y_pred[r_idx];
-                                *g_val = huber_pinball_grad(r, quantile, config.epsilon);
-                            }
-                        });
+                    // Compute Huber-smoothed pinball gradients
+                    for r_idx in 0..n_samples {
+                        let r = y[r_idx] - ws.y_pred[r_idx];
+                        ws.residual_gradients[r_idx] =
+                            huber_pinball_grad(r, quantile, config.epsilon);
+                    }
 
-                    // Backpropagate gradients to coefficients $B^T \nabla L$
+                    // Backpropagate negative gradients to coefficients
                     design_matrix.transpose_multiply(&ws.residual_gradients, &mut ws.coeff_grads);
-
-                    let mut grad_col = Col::<f64>::zeros(n_basis_total);
                     for b_idx in 0..n_basis_total {
-                        // Total gradient $\nabla f(\text{coef}) = -B^T \nabla L + \lambda \text{coef} + \rho (\text{coef} - z + u)$
-                        grad_col[b_idx] = -ws.coeff_grads[b_idx] * weight
-                            + config.lambda * ws.current_coef[b_idx]
-                            + current_rho
+                        ws.grad_col[b_idx] = ws.coeff_grads[b_idx] * weight
+                            - config.lambda * ws.current_coef[b_idx]
+                            - current_rho
                                 * (ws.current_coef[b_idx] - monotone_coef[(b_idx, q_idx)]
                                     + dual_var[(b_idx, q_idx)]);
                     }
 
-                    // Newton step: $\Delta \text{coef} = -H^{-1} \nabla f$
-                    let search_direction = llt_factorization.solve(-&grad_col);
+                    // Newton step
+                    llt_factorization.solve_in_place(&mut ws.grad_col);
+                    let mut max_step: f64 = 0.0;
                     for b_idx in 0..n_basis_total {
-                        ws.current_coef[b_idx] += search_direction[b_idx];
+                        let step = ws.grad_col[b_idx];
+                        ws.current_coef[b_idx] += step;
+                        max_step = max_step.max(step.abs());
                     }
 
-                    // Convergence check for inner Newton iterations
-                    if search_direction.norm_max() < 1e-7 {
+                    if max_step < 1e-7 {
                         break;
                     }
                 }
@@ -203,35 +203,53 @@ pub fn solve_admm(
             }
         }
 
-        // Auxiliary update: $z^{k+1} = \text{argmin}_z \frac{\rho}{2}\|\text{coef}^{k+1} - z + u^k\|_2^2$ s.t. $z_{i,m} \le z_{i,m+1}$
-        let updated_monotone_zs: Vec<Vec<f64>> = (0..n_basis_total)
-            .into_par_iter()
-            .map(|b_idx| {
-                let mut v_targets = vec![0.0; n_quantiles];
-                let mut z_projection = vec![0.0; n_quantiles];
+        // Auxiliary update
+        pava_workspaces
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(b_idx, p_ws)| {
                 for q_idx in 0..n_quantiles {
-                    v_targets[q_idx] = coef[(b_idx, q_idx)] + dual_var[(b_idx, q_idx)];
+                    p_ws.v_targets[q_idx] = coef[(b_idx, q_idx)] + dual_var[(b_idx, q_idx)];
                 }
-                // Isotonic regression via PAVA
-                pava(&v_targets, &mut z_projection);
-                z_projection
-            })
-            .collect();
+                pava(&p_ws.v_targets, &mut p_ws.z_projection);
+            });
 
-        for (b_idx, z_vec) in updated_monotone_zs.into_iter().enumerate() {
-            for (q_idx, &val) in z_vec.iter().enumerate() {
-                monotone_coef[(b_idx, q_idx)] = val;
+        for (b_idx, p_ws) in pava_workspaces.iter().enumerate() {
+            for q_idx in 0..n_quantiles {
+                monotone_coef[(b_idx, q_idx)] = p_ws.z_projection[q_idx];
             }
         }
 
-        // Dual update: $u^{k+1} = u^k + \text{coef}^{k+1} - z^{k+1}$
-        dual_var += &coef - &monotone_coef;
+        // Compute residuals and convergence metrics
+        let mut primal_residual: f64 = 0.0;
+        let mut dual_residual: f64 = 0.0;
+        let mut max_coef_norm: f64 = 0.0;
+        let mut max_zt_norm: f64 = 0.0;
+        let mut max_dual_norm: f64 = 0.0;
+        for q_idx in 0..n_quantiles {
+            for b_idx in 0..n_basis_total {
+                let c_val = coef[(b_idx, q_idx)];
+                let z_val = monotone_coef[(b_idx, q_idx)];
+                let z_old = z_prev[(b_idx, q_idx)];
 
-        // Residuals for convergence: $r = \|\text{coef} - z\|$, $s = \rho \|z - z_{prev}\|$
-        let primal_residual = (&coef - &monotone_coef).norm_max();
-        let dual_residual = current_rho * (&monotone_coef - &z_prev).norm_max();
+                dual_var[(b_idx, q_idx)] += c_val - z_val;
+                let u_val = dual_var[(b_idx, q_idx)];
 
-        if primal_residual < config.atol && dual_residual < config.atol {
+                primal_residual = primal_residual.max((c_val - z_val).abs());
+                dual_residual = dual_residual.max((z_val - z_old).abs());
+
+                max_coef_norm = max_coef_norm.max(c_val.abs());
+                max_zt_norm = max_zt_norm.max(z_val.abs());
+                max_dual_norm = max_dual_norm.max(u_val.abs());
+            }
+        }
+
+        dual_residual *= current_rho;
+
+        let eps_primal = config.atol + config.rtol * max_coef_norm.max(max_zt_norm);
+        let eps_dual = config.atol + config.rtol * current_rho * max_dual_norm;
+
+        if primal_residual < eps_primal && dual_residual < eps_dual {
             converged = true;
             break;
         }
